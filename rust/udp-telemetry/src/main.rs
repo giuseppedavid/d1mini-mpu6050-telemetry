@@ -62,7 +62,7 @@ fn main() {
 	let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
 
-    let window = video_subsystem.window("rust-sdl2 demo: Video", 800, 800)
+    let window = video_subsystem.window("MPU6050 telemetry data", 800, 800)
         .position_centered()
         .opengl()
         .build()
