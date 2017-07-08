@@ -1,0 +1,10 @@
+[package]
+name = "udp-telemetry"
+version = "0.1.0"
+authors = ["Michael Carroll <ineffable@gmail.com>"]
+
+[dependencies]
+byteorder = "1.0.0"
+
+[dependencies.sdl2]
+    git = "https://github.com/AngryLawyer/rust-sdl2"
