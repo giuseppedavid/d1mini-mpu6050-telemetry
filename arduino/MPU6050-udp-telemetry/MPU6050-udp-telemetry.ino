@@ -6,7 +6,7 @@
 
 //#include <UbidotsMicroESP8266.h>
 //#define TOKEN "XXXXXXXXXXXXXXXXXXXXXX" // Put here your Ubidots TOKEN
-char * ssid = "cashew"; // Put your WiFi SSID here
+char * ssid = "OpenWrt"; // Put your WiFi SSID here
 char * pass = "oW329bTdVmYJ"; // Put your Wifi Password here
 //Ubidots client(TOKEN);
 
@@ -118,7 +118,7 @@ void loop() {
   udp.write((char *)&tm, sizeof(tm));
   udp.endPacket();
 
-  delay(40);
+  delay(20);
 }
 
 

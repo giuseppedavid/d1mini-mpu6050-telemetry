@@ -5,6 +5,8 @@ authors = ["Michael Carroll <ineffable@gmail.com>"]
 
 [dependencies]
 byteorder = "1.0.0"
+rustfft = "2.0.0"
+num = "*"
 
 [dependencies.sdl2]
     git = "https://github.com/AngryLawyer/rust-sdl2"

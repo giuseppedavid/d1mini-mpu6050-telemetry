@@ -1,6 +1,9 @@
 //use std::net::UdpSocket;
 extern crate byteorder;
 extern crate sdl2;
+extern crate rustfft;
+
+extern crate num;
 
 use sdl2::pixels::Color;
 use sdl2::event::Event;
@@ -9,9 +12,18 @@ use sdl2::rect::Rect;
 use sdl2::rect::Point;
 use std::time::Duration;
 
+use std::io::prelude::*;
+use std::fs::File;
 use std::io::Cursor;
 use byteorder::{ReadBytesExt, LittleEndian};
 use std::f64;
+
+//use num::complex::Complex;
+
+use rustfft::FFT;
+use rustfft::FFTplanner;
+use rustfft::num_complex::Complex;
+use rustfft::num_traits::Zero;
 
 static bits_per_g: i32 = 16384;
 static bits_per_dps: i32 = 131;
@@ -62,7 +74,7 @@ fn main() {
 	let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
 
-    let window = video_subsystem.window("MPU6050 telemetry data", 800, 800)
+    let window = video_subsystem.window("MPU6050 telemetry data", 1200, 800)
         .position_centered()
         .opengl()
         .build()
@@ -76,12 +88,21 @@ fn main() {
 
 	let mut event_pump = sdl_context.event_pump().unwrap();
 
-	let mut bx: [ u16; 500] = [0; 500];
-	let mut by: [ u16; 500] = [0; 500];
-	let mut bz: [ u16; 500] = [0; 500];
+	let mut bx: [ u16; 1024] = [0; 1024];
+	let mut by: [ u16; 1024] = [0; 1024];
+	let mut bz: [ u16; 1024] = [0; 1024];
+	let mut ba: [ u16; 1024] = [0; 1024];
+	let mut spectra: [f32; 512] = [0.0f32; 512];
 
 	let mut bpos : usize = 0;
 	let mut blen : usize = 0;
+
+	let mut initial_pack_num = 0;
+	let mut packcount = 0;
+
+	let mut dataf = File::create("rawdata.dat").unwrap(); 
+		// we'll write out packets recieved to this file (so we can later replay them i guess)
+	let mut logf = File::create("data.csv").unwrap(); // csv for analysis elsewhere
 
     // read from the socket
     let mut buf:[u8; 1024] = [0; 1024]; //[i32; 500] = [0; 500];
@@ -91,10 +112,16 @@ fn main() {
     	//println!("{} bytes recieved", amt);
 
 		tm.from_packet(&buf[0..32]); // only care about the first 32 bytes
-		println!("{} packets, {} ms, MAGIC = {}", tm.counter, tm.ms, tm.magic);
-		//println!("ac {}, {}, {}", tm.ac_x, tm.ac_y, tm.ac_z);
+
+		dataf.write_all(&buf[0..32]);
+		write!(&mut logf, "{},{},{},{},{},{},{},{},{}\n",tm.counter, tm.ms,
+								tm.ac_x,tm.ac_y,tm.ac_z,
+								tm.tmp,
+								tm.gy_x,tm.gy_y,tm.gy_z,
+			).unwrap();
+		
 		let (dx, dy, dz) = ac_to_angles(tm.ac_x, tm.ac_y, tm.ac_z);
-		println!("degrees {}, {}, {}", dx, dy, dz);
+		//println!("degrees {}, {}, {}", dx, dy, dz);
 		//let (fx,fy,fz) = tm.ac_to_f();
 		//let normal = normalise_vector(fx, fy, fz);
 		//let (pitch,yaw, forward ) = vector_to_angles(fx, fy,fz);
@@ -104,26 +131,27 @@ fn main() {
 		bx[bpos] = dx.round() as u16;
 		by[bpos] = dy.round() as u16;
 		bz[bpos] = dz.round() as u16;
+		ba[bpos] = normalise_vector(tm.ac_x as f64, tm.ac_y as f64, tm.ac_z as f64).round() as u16;
 
-		println!("degrees @ {} = {}, {}, {}", bpos, bx[bpos], by[bpos], bz[bpos]);
+		//println!("degrees @ {} = {}, {}, {}", bpos, bx[bpos], by[bpos], bz[bpos]);
 
 		bpos=bpos+1;
-		if (bpos > 499) {
+		if (bpos > 1023) {
 			bpos = 0;
 		}
 
-		if (blen < 500 ) {
+		if (blen < 1024 ) {
 			blen=blen+1;
 		}
 
 		canvas.set_draw_color(Color::RGB(0, 0, 0));
 		canvas.clear();
 		canvas.set_draw_color(Color::RGB(255, 255, 255));
-		canvas.fill_rect(Rect::new(50,50,100+500,100+360));
+		canvas.fill_rect(Rect::new(50,50,100+1024,100+360));
 
 		canvas.set_draw_color(Color::RGB(0, 0, 0));
 		canvas.draw_line(Point::new(100,100),Point::new(100,100+360));
-		canvas.draw_line(Point::new(100,100+360),Point::new(100+500,100+360));
+		canvas.draw_line(Point::new(100,100+360),Point::new(100+1024,100+360));
 		canvas.set_draw_color(Color::RGB(0, 0, 255));
 
 		// draw graph
@@ -131,15 +159,20 @@ fn main() {
 		let mut lx = 0;
 		let mut ly = 0;
 		let mut lz = 0;
+		let mut lamp = 0;
 
-		for x in 0..500 {
+		for x in 0..1024 {
     		let mut i = x+bpos;
 
 
-			if (i > 499) {
-				i = i - 500;
+			if (i > 1023) {
+				i = i - 1024;
 			}
 			//println!("degrees # {} @ {} = {}", x, i, bx[i] );
+
+			let normalised_vector = ba[i] as f64/16384.0f64;
+
+			//println!(" applitude = {}", normalised_vector);
 
 			if (x == 0) {
 				canvas.set_draw_color(Color::RGB(0, 0, 255));
@@ -156,21 +189,26 @@ fn main() {
 				canvas.draw_line(Point::new(100-1+x as i32,100+ly), Point::new(100+x as i32,100+by[i] as i32));
 				canvas.set_draw_color(Color::RGB(255, 0, 0));
 				canvas.draw_line(Point::new(100-1+x as i32,100+lz), Point::new(100+x as i32,100+bz[i] as i32));
+				canvas.set_draw_color(Color::RGB(120,120,120));
+				let y = (150.0f64 * normalised_vector) as i32;
+				canvas.draw_line(Point::new(100-1+x as i32,100+lamp), Point::new(100+x as i32,100+y as i32));
+				lamp = y;
 			}
 
 			lx = bx[i] as i32;
 			ly = by[i] as i32;
 			lz = bz[i] as i32;
+			//lamp = normalise_vector;
 
 		}
 
 		// draw gauges for each axis
 
 		canvas.set_draw_color(Color::RGB(255, 255, 255));
-		canvas.fill_rect(Rect::new(50,550,700,200));
+		canvas.fill_rect(Rect::new(50,650,800,200));
 		canvas.set_draw_color(Color::RGB(0, 0, 0));
 		let mut p1_x : i32 = 200;
-		let p1_y : i32 = 650;
+		let p1_y : i32 = 750;
 		let mut p2_x = p1_x + (dx.to_radians().sin()*50.0f64).round() as i32;
 		let mut p2_y = p1_y + (dx.to_radians().cos()*50.0f64).round() as i32;
 		canvas.draw_line(Point::new(p1_x, p1_y), Point::new(p2_x, p2_y));
@@ -183,6 +221,32 @@ fn main() {
 		p2_y = p1_y + (dz.to_radians().cos()*50.0f64).round() as i32;
 		canvas.draw_line(Point::new(p1_x, p1_y), Point::new(p2_x, p2_y));
 
+		//println!("packet # {}", tm.counter );
+
+		if tm.counter > initial_pack_num + 256 {
+			let expected_pc :i32 = tm.counter as i32 - initial_pack_num as i32;
+			let pl :i32 = ((expected_pc - packcount)*100)/(expected_pc);
+			println!("packet loss # {}", pl );
+			println!("x = {}, y = {}, z = {}", tm.ac_x, tm.ac_y, tm.ac_z);
+			packcount = 0;
+			initial_pack_num = tm.counter;
+			spectra = find_spectral_peak(&ba, 1024);	
+		}
+		else {
+			packcount=packcount+1;
+		}
+
+		canvas.set_draw_color(Color::RGB(255, 255, 255));
+		let max = spectra.iter().cloned().fold(-1./0. /* -inf */, f32::max);
+		for x in 1..512 {
+			let drawy = 620-(((spectra[x]*80.0f32)/max) as i32);
+			let drawx = x as i32 + 50;
+			canvas.draw_line(Point::new(drawx, 620), Point::new(drawx, drawy));
+			if (x % 64 ) == 1 {
+				canvas.draw_line(Point::new(drawx, 620), Point::new(drawx, 625));
+			}
+			//println!(" spectra = {}, x = {}, y = {} (max = {})", spectra[x], drawx, drawy, max);
+		}
 
 		canvas.present();
 
@@ -195,6 +259,7 @@ fn main() {
             }
 		}
 	} // end of loop
+	
 } 	// end of main
 
 fn bytes_to_u32 (buf: &[u8], start: usize) -> u32 {
@@ -242,6 +307,40 @@ fn map_f64 (x: i32, in_min: i32, in_max: i32, out_min: i32, out_max: i32) -> f64
   (x as f64 - in_min as f64) * (out_max as f64 - out_min as f64) / (in_max as f64 - in_min as f64) + out_min as f64
 }
 
+fn find_spectral_peak(buf: &[u16], len: usize) -> [f32; 512] {
+    //let mut reader = WavReader::open(filename).expect("Failed to open WAV file");
+    //let num_samples = reader.len() as usize;
+	let mut planner = FFTplanner::new(false);
+	let fft = planner.plan_fft(len);
+	let mut specs: [f32; 512] = [0.0f32; 512];
+    //let mut fft = FFT::new(len, false);
+    //let signal = reader.samples::<i16>()
+	//	.map(|x| Complex::new(x.unwrap() as f32, 0f32))
+    //    .collect::<Vec<_>>();
+	//let mut signal = buf.into_iter().map(|x| Complex::new(x as f32, 0f32)).collect::<Vec<_>>();
+	let mut input:  Vec<Complex<f32>> = vec![Complex::zero(); len];
+	for i in 0..len {
+    	//println!("{}", x); // x: i32
+		input[i] = Complex::new(buf[i] as f32, 0f32);
+	}
+    let mut spectrum = input.clone();
+    fft.process(&mut input[..], &mut spectrum[..]);
+
+	let mut maxi = 0;
+	let mut max:f32 = 0.0f32;
+	for i in 1..len/2 {
+		let norm:f32 = spectrum[i].norm();
+		//println!("#{} {}", i, norm);
+		specs[i]=norm;
+		if norm > max {
+			maxi = i;
+			max = norm;
+		}
+	}
+	println!("MAX: #{}, {}hz {}", maxi, maxi*50, max);
+
+	specs
+}
 
 /* MODIFIED QUAKE 3 CODE
 fn vector_to_angles(x: f64, y: f64, z: f64) -> ( f64, f64, f64 ) {
