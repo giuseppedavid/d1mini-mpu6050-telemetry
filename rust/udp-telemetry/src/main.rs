@@ -2,8 +2,8 @@
 extern crate byteorder;
 extern crate sdl2;
 extern crate rustfft;
-
 extern crate num;
+extern crate getopts;
 
 use sdl2::pixels::Color;
 use sdl2::event::Event;
@@ -17,6 +17,7 @@ use std::fs::File;
 use std::io::Cursor;
 use byteorder::{ReadBytesExt, LittleEndian};
 use std::f64;
+use std::env;
 
 //use num::complex::Complex;
 
@@ -24,6 +25,9 @@ use rustfft::FFT;
 use rustfft::FFTplanner;
 use rustfft::num_complex::Complex;
 use rustfft::num_traits::Zero;
+
+// handle command line options
+use getopts::Options;
 
 static bits_per_g: i32 = 16384;
 static bits_per_dps: i32 = 131;
@@ -68,8 +72,33 @@ impl telemetry {
 
 fn main() {
 	use std::net::UdpSocket;
-    let mut socket = UdpSocket::bind("10.1.1.110:12345").expect("couldn't bind to address");
+    
 	let mut tm = telemetry { ..Default::default() };
+
+	let args: Vec<String> = env::args().collect();
+    let program = args[0].clone();
+	let mut replay_mode = false;
+	let mut replay_file = None;
+
+	// handle options 
+    let mut opts = Options::new();
+    opts.optopt("r", "replay", "replay previous data", "FILE");
+    opts.optflag("h", "help", "print this help menu");
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => { m }
+        Err(f) => { panic!(f.to_string()) }
+    };
+    if matches.opt_present("h") {
+        print_usage(&program, opts);
+        return;
+    }
+    let input = matches.opt_str("r");
+    //let input = if !matches.free.is_empty() {
+    //    matches.free[0].clone()
+    //} else {
+    //    print_usage(&program, opts);
+    //    return;
+    //};
 
 	let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
@@ -86,6 +115,19 @@ fn main() {
     canvas.clear();
 	canvas.present();
 
+	match input {
+		Some(x) => {
+			println!("Open file here: {}", x);
+			replay_file = Some(File::open(x).unwrap());
+			replay_mode = true;
+		},
+		None => {
+			println!("Defaulting to listen mode");
+			replay_mode = false;
+		},
+	}
+	let mut socket = UdpSocket::bind("0.0.0.0:12345").expect("couldn't bind to address");
+
 	let mut event_pump = sdl_context.event_pump().unwrap();
 
 	let mut bx: [ u16; 1024] = [0; 1024];
@@ -100,25 +142,66 @@ fn main() {
 	let mut initial_pack_num = 0;
 	let mut packcount = 0;
 
-	let mut dataf = File::create("rawdata.dat").unwrap(); 
-		// we'll write out packets recieved to this file (so we can later replay them i guess)
-	let mut logf = File::create("data.csv").unwrap(); // csv for analysis elsewhere
+	let mut dataf : Option<File> = None;
+	let mut logf : Option<File> = None;
+
+	// if not replaying, open the raw and csv data files
+	if replay_mode == false {
+		dataf = Some(File::create("rawdata.dat").unwrap()); // we'll write out packets recieved to this file (so we can later replay them i guess)
+		logf = Some(File::create("data.csv").unwrap()); // csv for analysis elsewhere
+	}
+	else {
+		//replay_file = Some(File::open(x).unwrap());
+	}
 
     // read from the socket
     let mut buf:[u8; 1024] = [0; 1024]; //[i32; 500] = [0; 500];
 	'running: loop {
-    	let (amt, src) = socket.recv_from(&mut buf).expect("Didn't receive data");
+		if replay_mode == false {
+    		let (amt, src) = socket.recv_from(&mut buf).expect("Didn't receive data");
+			tm.from_packet(&buf[0..32]); // only care about the first 32 bytes
+		}
+		else {
+			// FIXME: read 32 bytes from data file
+			let mut fbuf:[u8; 32] = [0; 32];
+			match replay_file {
+				Some(ref mut read_file) => {
+					read_file.read(&mut fbuf);
+					tm.from_packet(&fbuf);
+				},
+				None => println!("Some wierd file error occurred"),
+			}
+		}
+
 
     	//println!("{} bytes recieved", amt);
 
-		tm.from_packet(&buf[0..32]); // only care about the first 32 bytes
+		
 
-		dataf.write_all(&buf[0..32]);
-		write!(&mut logf, "{},{},{},{},{},{},{},{},{}\n",tm.counter, tm.ms,
-								tm.ac_x,tm.ac_y,tm.ac_z,
-								tm.tmp,
-								tm.gy_x,tm.gy_y,tm.gy_z,
-			).unwrap();
+		// if not replaying, write to file
+		if replay_mode == false {
+			/*match dataf {
+				Some() => println!("Would write data here if it worked"), //x.write_all(&buf[0..32]),
+				None => println!("Unable to write to data file"),
+			}*/
+			//dataf.write_all(&buf[0..32]);
+			/*match logf {
+				Some() => println!("Would write CSV here if it worked"), /*write!(&mut x, "{},{},{},{},{},{},{},{},{}\n",tm.counter, tm.ms,
+									tm.ac_x,tm.ac_y,tm.ac_z,
+									tm.tmp,
+									tm.gy_x,tm.gy_y,tm.gy_z,
+					).unwrap(),*/
+				None => println!("Unable to write to CSV file"),
+			}*/
+			/* write!(&mut logf, "{},{},{},{},{},{},{},{},{}\n",tm.counter, tm.ms,
+									tm.ac_x,tm.ac_y,tm.ac_z,
+									tm.tmp,
+									tm.gy_x,tm.gy_y,tm.gy_z,
+				).unwrap(); */
+		}
+		else {
+			// do nothing
+		}
 		
 		let (dx, dy, dz) = ac_to_angles(tm.ac_x, tm.ac_y, tm.ac_z);
 		//println!("degrees {}, {}, {}", dx, dy, dz);
@@ -237,8 +320,13 @@ fn main() {
 		}
 
 		canvas.set_draw_color(Color::RGB(255, 255, 255));
-		let max = spectra.iter().cloned().fold(-1./0. /* -inf */, f32::max);
+		let mut max = spectra.iter().cloned().fold(-1./0. /* -inf */, f32::max);
+		if max == 0.0f32 {
+			max = 1.0;
+		} 
+
 		for x in 1..512 {
+			//println!(" spectra = {} (max = {})", spectra[x], max);
 			let drawy = 620-(((spectra[x]*80.0f32)/max) as i32);
 			let drawx = x as i32 + 50;
 			canvas.draw_line(Point::new(drawx, 620), Point::new(drawx, drawy));
@@ -340,6 +428,11 @@ fn find_spectral_peak(buf: &[u16], len: usize) -> [f32; 512] {
 	println!("MAX: #{}, {}hz {}", maxi, maxi*50, max);
 
 	specs
+}
+
+fn print_usage(program: &str, opts: Options) {
+    let brief = format!("Usage: {} --replay FILE [options]", program);
+    print!("{}", opts.usage(&brief));
 }
 
 /* MODIFIED QUAKE 3 CODE
